@@ -1,0 +1,8 @@
+*.vcxproj*
+*.exe
+*.pdb
+*.exp
+*.lib
+*.sln
+*.bin
+.vs/
