@@ -30,6 +30,14 @@ private:
 	void SumAndCut();
 	void Step();
 
+	void NormalizeKernel(float* cpuKernelTmp);
+	void SetUniformKernel(float* cpuKernelTmp);
+	void SetMoveKernel(float* cpuKernelTmp);
+	void SetExponentialKernel(float* cpuKernelTmp);
+	void SetPolynomialKernel(float* cpuKernelTmp);
+	void SetRectangularKernel(float* cpuKernelTmp);
+	void SetGolKernel(float* cpuKernelTmp);
+
 	int fieldSize;
 	int kernelSize;
 	int padSize;

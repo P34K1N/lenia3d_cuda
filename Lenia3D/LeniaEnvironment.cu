@@ -54,48 +54,37 @@ LeniaEnvironment::LeniaEnvironment(std::string file, int fieldSize, int kernelRa
 
 	// initialize convolution kernel
 
-	// power of 2 nearest to volumeKernel and smaller than it
-	int sumReductionBufSize = volumeKernel;
-	sumReductionBufSize--;
-	sumReductionBufSize |= sumReductionBufSize >> 1;
-	sumReductionBufSize |= sumReductionBufSize >> 2;
-	sumReductionBufSize |= sumReductionBufSize >> 4;
-	sumReductionBufSize |= sumReductionBufSize >> 8;
-	sumReductionBufSize |= sumReductionBufSize >> 16;
-	sumReductionBufSize++;
-	sumReductionBufSize >>= 1;
-
-	// malloc array for sum reduction
-	float* sumReductionBuf;
-	res = cudaMalloc((void**)(&sumReductionBuf), sumReductionBufSize * sizeof(*sumReductionBuf));
-	assert(res == cudaSuccess);
+	// malloc array for cpu kernel
+	float* cpuKernelTmp = (float*)calloc(volumeKernel, sizeof(*cpuKernelTmp));
 
 	// calculate kernel
 	switch (kernelType) {
 	case KernelType::kUniform:
-		setUniformKernel <<< gridDim, blockDim >>> (kernel, kernelSize, sumReductionBuf, sumReductionBufSize);
+		SetUniformKernel(cpuKernelTmp);
 		break;
 	case KernelType::kMove:
-		setMoveKernel <<< gridDim, blockDim >>> (kernel, kernelSize, sumReductionBuf, sumReductionBufSize);
+		SetMoveKernel(cpuKernelTmp);
 		break;
 	case KernelType::kExponential:
-		setExponentialKernel <<< gridDim, blockDim >>> (kernel, kernelSize, sumReductionBuf, sumReductionBufSize);
+		SetExponentialKernel(cpuKernelTmp);
 		break;
 	case KernelType::kPolynomial:
-		setPolynomialKernel <<< gridDim, blockDim >>> (kernel, kernelSize, sumReductionBuf, sumReductionBufSize);
+		SetPolynomialKernel(cpuKernelTmp);
 		break;
 	case KernelType::kRectangular:
-		setRectangularKernel <<< gridDim, blockDim >>> (kernel, kernelSize, sumReductionBuf, sumReductionBufSize);
+		SetRectangularKernel(cpuKernelTmp);
 		break;
 	case KernelType::kGol:
-		setGolKernel <<< gridDim, blockDim >>> (kernel, kernelSize, sumReductionBuf, sumReductionBufSize);
+		SetGolKernel(cpuKernelTmp);
 		break;
 	}
 
-	// free array for sum reduction
-	res = cudaFree(sumReductionBuf);
+	// move kernel to gpu and free tmp array
+	res = cudaMemcpy(kernel, cpuKernelTmp, 
+		volumeKernel * sizeof(*kernel), cudaMemcpyHostToDevice);
 	assert(res == cudaSuccess);
-
+	free(cpuKernelTmp);
+	
 	// set growth type function
 	switch (growthType) {
 	case GrowthType::kDouble:
@@ -111,12 +100,113 @@ LeniaEnvironment::LeniaEnvironment(std::string file, int fieldSize, int kernelRa
 		applyGrowth = applyRectangularGrowth;
 		break;
 	}
-	res = cudaGetLastError();
-	assert(res == cudaSuccess);
 
 	// initialize memcpy params for padding
 	params = MemcpyParams(fieldSize, paddedFieldSize, padSize, imgGpu);
 };
+
+void LeniaEnvironment::NormalizeKernel(float* cpuKernelTmp) {
+	float sum = 0.0;
+	for (int idx = 0; idx < volumeKernel; idx++) {
+		sum += cpuKernelTmp[idx];
+		// std::cout << "sum += kernel[" << idx << "] = " << cpuKernelTmp[idx] << std::endl;
+	}
+	for (int idx = 0; idx < volumeKernel; idx++) {
+		cpuKernelTmp[idx] /= sum;
+		// std::cout << "kernel[" << idx << "] / " << sum << " = " << cpuKernelTmp[idx] << std::endl;
+	}
+}
+
+void LeniaEnvironment::SetUniformKernel(float* cpuKernelTmp) {
+	for (int idx = 0; idx < volumeKernel; idx++)
+		cpuKernelTmp[idx] = 1.0;
+	NormalizeKernel(cpuKernelTmp);
+}
+
+void LeniaEnvironment::SetMoveKernel(float* cpuKernelTmp) {
+	cpuKernelTmp[0] = 1.0;
+	NormalizeKernel(cpuKernelTmp);
+}
+
+void LeniaEnvironment::SetExponentialKernel(float* cpuKernelTmp) {
+	int mid = padSize;
+	int padSizeSqr = padSize * padSize;
+	for (int lay = 0; lay < kernelSize; lay++) {
+		float laySqr = (lay - mid) * (lay - mid);
+		for (int col = 0; col < kernelSize; col++) {
+			float colSqr = (col - mid) * (col - mid);
+			for (int row = 0; row < kernelSize; row++) {
+				float rowSqr = (row - mid) * (row - mid);
+				float r = sqrt(laySqr + colSqr + rowSqr) / mid;
+				if (r < 1) {
+					cpuKernelTmp[lay * padSizeSqr + col * padSize + row] = 
+						exp(4 - 1 / (r * (1 - r)));
+				}
+			}
+		}
+	}
+	NormalizeKernel(cpuKernelTmp);
+}
+
+void LeniaEnvironment::SetPolynomialKernel(float* cpuKernelTmp) {
+	int mid = padSize;
+	int padSizeSqr = padSize * padSize;
+	for (int lay = 0; lay < kernelSize; lay++) {
+		float laySqr = (lay - mid) * (lay - mid);
+		for (int col = 0; col < kernelSize; col++) {
+			float colSqr = (col - mid) * (col - mid);
+			for (int row = 0; row < kernelSize; row++) {
+				float rowSqr = (row - mid) * (row - mid);
+				float r = sqrt(laySqr + colSqr + rowSqr);
+				if (r < 1) {
+					cpuKernelTmp[lay * padSizeSqr + col * padSize + row] = 
+						 pow(4 * r * (1 - r), 4);
+				}
+			}
+		}
+	}
+	NormalizeKernel(cpuKernelTmp);
+}
+
+void LeniaEnvironment::SetRectangularKernel(float* cpuKernelTmp) {
+	int mid = padSize;
+	int padSizeSqr = padSize * padSize;
+	for (int lay = 0; lay < kernelSize; lay++) {
+		float laySqr = (lay - mid) * (lay - mid);
+		for (int col = 0; col < kernelSize; col++) {
+			float colSqr = (col - mid) * (col - mid);
+			for (int row = 0; row < kernelSize; row++) {
+				float rowSqr = (row - mid) * (row - mid);
+				float r = sqrt(laySqr + colSqr + rowSqr);
+				if (r < 1) {
+					cpuKernelTmp[lay * padSizeSqr + col * padSize + row] = 
+						 (r >= 0.25 && r <= 0.75) ? 1.0 : 0.0;
+				}
+			}
+		}
+	}
+	NormalizeKernel(cpuKernelTmp);
+}
+
+void LeniaEnvironment::SetGolKernel(float* cpuKernelTmp) {
+	int mid = padSize;
+	int padSizeSqr = padSize * padSize;
+	for (int lay = 0; lay < kernelSize; lay++) {
+		float laySqr = (lay - mid) * (lay - mid);
+		for (int col = 0; col < kernelSize; col++) {
+			float colSqr = (col - mid) * (col - mid);
+			for (int row = 0; row < kernelSize; row++) {
+				float rowSqr = (row - mid) * (row - mid);
+				float r = sqrt(laySqr + colSqr + rowSqr);
+				if (r < 1) {
+					cpuKernelTmp[lay * padSizeSqr + col * padSize + row] = 
+						 (r >= 0.25 && r <= 0.87) ? 1.0 : (r < 0.25 ? 0.5 : 0.0);
+				}
+			}
+		}
+	}
+	NormalizeKernel(cpuKernelTmp);
+}
 
 void LeniaEnvironment::Convolute() {
 	convolute <<< gridDim, blockDim >>> (
