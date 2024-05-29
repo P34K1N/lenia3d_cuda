@@ -5,4 +5,8 @@
 *.lib
 *.sln
 *.bin
+*.mp4
 .vs/
+python/module/build/
+python/module/dist/
+python/module/app/cu_automata_3d.egg-info/
